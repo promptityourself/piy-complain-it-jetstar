@@ -14,7 +14,7 @@
   const OWN_ECHO_MS = 15000;
   const BATCH_MS = 600;
   const MIN_BEEP_GAP_MS = 1500;
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
 
   const state = {
     root: null,
@@ -43,6 +43,7 @@
   };
 
   function remember(reason, node, text) {
+    if (state.selfTest && (text || '').includes(state.selfTest.marker)) return; // keep counters real
     state.stats[reason]++;
     if (reason === 'notChat' && state.decisions.filter((d) => d.reason === 'notChat').length >= 5) return;
     state.decisions.push({ at: new Date(), reason, text: (text || '').slice(0, 80), path: pathOf(node) });
@@ -336,16 +337,25 @@
   // ---------- self test ----------
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Inject a hidden fake message where the detector looks, and report whether it fired.
+  // Inject a hidden fake message into the real chat element (or the picked area), and report
+  // whether the detector fired. Only without a chat element does the probe carry its own chat class.
+  function probeTarget() {
+    if (state.root && state.root.isConnected) return { el: state.root, where: 'picked chat area' };
+    const root = findChatRoot();
+    if (root) return { el: root, where: 'real chat element ' + pathOf(root) };
+    return { el: document.body, where: 'page body with a fake chat class (no chat element found yet)', synthetic: true };
+  }
+
   async function probe(kind, text, setup) {
     const marker = 'JQSELFTEST' + Math.random().toString(36).slice(2, 8);
     state.selfTest = { marker, hits: [] };
+    const target = probeTarget();
     const el = document.createElement('div');
-    if (!state.root) el.className = 'webchat-message-row jq-selftest';
+    el.className = 'jq-selftest' + (target.synthetic ? ' webchat-message-row' : '');
     el.style.cssText = 'position:fixed;left:-9999px;top:0';
     el.textContent = text.replace('{m}', marker);
     if (setup) setup(norm(el.textContent));
-    (state.root && state.root.isConnected ? state.root : document.body).appendChild(el);
+    target.el.appendChild(el);
     await sleep(BATCH_MS + 500);
     el.remove();
     const hits = state.selfTest.hits.length;
@@ -383,9 +393,13 @@
     line(null, 'Tab', `hidden = ${document.hidden}, focused = ${document.hasFocus()}`);
 
     // Detector probes
+    const target = probeTarget();
+    line(!target.synthetic, 'Chat element found', target.synthetic ? 'NOT found — open the chat, then run the self test again' : 'yes');
+    out.push(`      fake messages placed in: ${target.where}`);
     const savedSent = [state.lastSent, state.lastSentAt];
     const msgHits = await probe('message', 'Agent: self test message {m}');
     line(msgHits > 0, 'Detects a new chat message', `${msgHits} hit(s) in ${state.root ? 'picked area' : 'auto mode'}`);
+    line(null, 'Real chat messages notified so far', `${state.log.length}` + (state.log.length ? '' : ' — send a message in the chat and run the self test again after the reply'));
     const echoHits = await probe('echo', 'My own text {m}', (t) => { state.lastSent = t; state.lastSentAt = Date.now(); });
     [state.lastSent, state.lastSentAt] = savedSent;
     line(echoHits === 0, 'Ignores my own sent message', `${echoHits} hit(s), expected 0`);
@@ -397,7 +411,7 @@
     out.push(`Chat area for copy: ${state.picked ? 'picked' : 'auto'} → ${describe(findChatRoot())}`);
     const candidates = [];
     allDocs().forEach((doc) => doc.querySelectorAll('[id], [class]').forEach((el) => {
-      if (panel.contains(el) || el.classList.contains('jq-selftest')) return;
+      if (panel.contains(el) || el.classList.contains('jq-selftest') || /^(SCRIPT|STYLE|LINK|META)$/.test(el.tagName)) return;
       if (CHAT_HINT.test(attr(el, 'id') + ' ' + attr(el, 'class'))) candidates.push(el);
     }));
     const outer = candidates.filter((el) => !candidates.some((o) => o !== el && o.contains(el)));

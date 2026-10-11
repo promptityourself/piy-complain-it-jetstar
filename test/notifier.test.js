@@ -79,6 +79,8 @@ const html = `<!doctype html><html><head><title>Complaints | Jetstar</title></he
   const rep = await page.evaluate(() => document.querySelector('#jq-notify-report textarea').value);
   check('self test: all pass', rep.includes('Result: all checks passed') && !/^FAIL/m.test(rep), (rep.match(/^(PASS|FAIL).*$/mg) || []).join(' | '));
   check('self test: report sections', ['== Chat discovery ==', '== Activity since start ==', 'same-origin (watched)', 'accepted: "Agent Sam'].every((x) => rep.includes(x)), 'discovery + decisions');
+  check('self test probes the real chat element', rep.includes('PASS  Chat element found') && rep.includes('fake messages placed in: real chat element') && rep.includes('div#webchatWindow.webchat'), 'probe target');
+  check('self test keeps counters real', /accepted=2, notChat=1, typing=1, echo=1,/.test(rep), (rep.match(/Counters: .*/) || [''])[0]);
   const logAfter = await page.evaluate(() => window.__jqNotify.state.log.length);
   check('self test does not add fake messages to log', logAfter === logBefore, `${logBefore} -> ${logAfter}`);
   await page.click('#jq-notify-report >> text=Close');
