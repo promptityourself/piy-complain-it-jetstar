@@ -20,14 +20,14 @@ A page reload removes the script. Paste it again after a reload.
 
 | Button | Action |
 | --- | --- |
-| 🔔 Test sound | Plays the alert (three tones) and enables sound. |
+| 🔔 Test sound | Plays the alert (three tones) and enables sound. Switch to another window within 10 s to test the repeat alarm. |
 | 🧪 Self test | Plays the alert, injects hidden fake messages to test the detector, lists the chat elements and iframes it found, and shows the last detector decisions. |
 | 📋 Copy chat | Copies the chat window text and every message the notifier saw, with arrival time. |
 | 🎯 Pick chat area | Click the chat messages to watch only that element. Use it when auto mode misses messages. |
 | 🔇 Mute | Turns the sound off and on. |
 | ✕ | Removes the script from the page. |
 
-The tab title flashes when a message arrives while you are in another tab.
+When a message arrives while you look at another window or tab, the alert repeats every 3 s and the tab title flashes. Both stop when you come back to the page, click the panel, or click 🔇 Mute.
 
 ## How it works
 

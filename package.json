@@ -1,6 +1,6 @@
 {
   "name": "piy-complain-it-jetstar",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Sound alert, self test and transcript copy for the Jetstar live chat (browser console script)",
   "license": "MIT",
   "private": true,

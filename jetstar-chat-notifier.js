@@ -1,5 +1,6 @@
 // Jetstar chat notifier — paste into the browser DevTools console on the chat page.
 // Beeps (and flashes the tab title) when a new message arrives in the chat.
+// While you look at another window, it keeps beeping until you come back.
 // Panel buttons: Test sound, Self test, Copy chat, Pick chat area, Mute, Close.
 (() => {
   'use strict';
@@ -14,7 +15,9 @@
   const OWN_ECHO_MS = 15000;
   const BATCH_MS = 600;
   const MIN_BEEP_GAP_MS = 1500;
-  const VERSION = '1.2.0';
+  const REPEAT_MS = 3000; // alarm beep interval while the page is not in focus
+  const TEST_ARM_MS = 10000; // after Test sound, leaving the page within this time starts the alarm
+  const VERSION = '1.3.0';
 
   const state = {
     root: null,
@@ -29,6 +32,8 @@
     pending: [],
     batchTimer: null,
     titleTimer: null,
+    alarmTimer: null,
+    testArmedUntil: 0,
     origTitle: document.title,
     observers: [],
     hookedDocs: new WeakSet(),
@@ -100,7 +105,7 @@
       state.lastBeep = now;
       try { beep(); } catch (e) { console.warn('[jq-notify] beep failed', e); }
     }
-    if (document.hidden || !document.hasFocus()) flashTitle();
+    if (!isLooking()) { flashTitle(); startAlarm(); }
     console.log('[jq-notify] new message:', texts.join(' | '));
     renderStatus();
   }
@@ -113,6 +118,26 @@
       on = !on;
       document.title = on ? `🔔 (${state.unseen}) New chat message` : state.origTitle;
     }, 1000);
+  }
+
+  const isLooking = () => !document.hidden && document.hasFocus();
+
+  // Repeat the beep until the page has focus again (or Mute / panel click).
+  function startAlarm() {
+    if (state.alarmTimer || state.muted) return;
+    state.alarmTimer = setInterval(() => {
+      if (state.muted || isLooking()) { stopAlarm(); return; }
+      state.lastBeep = Date.now();
+      try { beep(); } catch (e) { console.warn('[jq-notify] beep failed', e); }
+    }, REPEAT_MS);
+    renderStatus();
+  }
+
+  function stopAlarm() {
+    if (!state.alarmTimer) return;
+    clearInterval(state.alarmTimer);
+    state.alarmTimer = null;
+    renderStatus();
   }
 
   function stopFlash() {
@@ -146,7 +171,7 @@
     if (panel.contains(node)) return true;
     const el = node.nodeType === 1 ? node : node.parentElement;
     if (!el) return true;
-    if (el.closest('input, textarea, [contenteditable="true"], script, style, noscript')) return true;
+    if (el.closest('head, input, textarea, [contenteditable="true"], script, style, noscript')) return true;
     return false;
   }
 
@@ -384,6 +409,7 @@
     try { audio(); beep(); await sleep(150); audioState = state.ctx.state; } catch (e) { audioState = 'error: ' + e.message; }
     line(audioState === 'running', 'Sound engine', `AudioContext state = ${audioState} (did you hear 3 tones?)`);
     line(null, 'Mute', state.muted ? 'MUTED — no sound will play' : 'off');
+    line(null, 'Repeat alarm', state.alarmTimer ? 'ringing' : `off (repeats every ${REPEAT_MS / 1000} s while the page is not in focus)`);
 
     // Clipboard
     line(!!(navigator.clipboard && window.isSecureContext), 'Clipboard API', `secure context = ${window.isSecureContext}`);
@@ -532,14 +558,18 @@
     return b;
   }
 
-  button('🔔 Test sound', () => { beep(); flash('Test sound played'); });
+  button('🔔 Test sound', () => {
+    beep();
+    state.testArmedUntil = Date.now() + TEST_ARM_MS;
+    flash(`Test sound played. Switch to another window within ${TEST_ARM_MS / 1000} s to test the repeat.`);
+  });
   button('🧪 Self test', selfTest);
   button('📋 Copy chat', copyChat);
   button('🎯 Pick chat area', startPick);
-  button('🔇 Mute', (b) => { state.muted = !state.muted; b.textContent = state.muted ? '🔊 Unmute' : '🔇 Mute'; renderStatus(); });
+  button('🔇 Mute', (b) => { state.muted = !state.muted; if (state.muted) stopAlarm(); b.textContent = state.muted ? '🔊 Unmute' : '🔇 Mute'; renderStatus(); });
   button('✕', () => window.__jqNotify.destroy());
   panel.append(title, status, row);
-  panel.addEventListener('click', () => { state.unseen = 0; stopFlash(); renderStatus(); });
+  panel.addEventListener('click', () => { state.unseen = 0; stopFlash(); stopAlarm(); renderStatus(); });
 
   let flashMsg = '';
   let flashTimer = null;
@@ -555,14 +585,28 @@
     const locked = !state.ctx || state.ctx.state !== 'running';
     status.textContent = flashMsg ||
       [
-        state.muted ? 'Muted' : locked ? 'Click "Test sound" once to enable sound' : 'Sound on',
+        state.alarmTimer ? '🔔 Ringing — click this page to stop' : state.muted ? 'Muted' : locked ? 'Click "Test sound" once to enable sound' : 'Sound on',
         state.picked ? 'watching picked area' : 'watching all chat widgets',
       ].join(' · ');
   }
 
-  const onFocus = () => { state.unseen = 0; stopFlash(); renderStatus(); };
+  const onFocus = () => { state.unseen = 0; stopFlash(); stopAlarm(); renderStatus(); };
+  // Leaving the page soon after "Test sound" starts the alarm, the same as a real message.
+  const onLeave = () => {
+    if (Date.now() < state.testArmedUntil && !isLooking()) {
+      state.testArmedUntil = 0;
+      startAlarm();
+    }
+  };
+  const onVisibility = () => (document.hidden ? onLeave() : document.hasFocus() && onFocus());
   window.addEventListener('focus', onFocus);
-  state.cleanups.push(() => window.removeEventListener('focus', onFocus));
+  window.addEventListener('blur', onLeave);
+  document.addEventListener('visibilitychange', onVisibility);
+  state.cleanups.push(() => {
+    window.removeEventListener('focus', onFocus);
+    window.removeEventListener('blur', onLeave);
+    document.removeEventListener('visibilitychange', onVisibility);
+  });
 
   document.body.appendChild(panel);
   renderStatus();
@@ -579,6 +623,7 @@
       state.cleanups.forEach((fn) => fn());
       clearTimeout(state.batchTimer);
       stopFlash();
+      stopAlarm();
       panel.remove();
       const report = document.getElementById('jq-notify-report');
       if (report) report.remove();

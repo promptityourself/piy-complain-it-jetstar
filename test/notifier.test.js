@@ -21,6 +21,9 @@ const html = `<!doctype html><html><head><title>Complaints | Jetstar</title></he
   // Count beeps by stubbing the oscillator start.
   await page.addInitScript(() => {
     window.__osc = 0;
+    // Let the test decide whether the page "has focus".
+    window.__focused = true;
+    Document.prototype.hasFocus = () => window.__focused;
     const Orig = window.AudioContext;
     window.AudioContext = class extends Orig {
       createOscillator() { const o = super.createOscillator(); const s = o.start.bind(o); o.start = (...a) => { window.__osc++; return s(...a); }; return o; }
@@ -61,6 +64,25 @@ const html = `<!doctype html><html><head><title>Complaints | Jetstar</title></he
   await page.evaluate(() => { const doc = document.getElementById('liveagentFrame').contentDocument; const d = doc.createElement('p'); d.textContent = 'Agent Sam: I can see your booking.'; doc.querySelector('.chat-log').appendChild(d); });
   await wait(); b2 = await beeps(); check('iframe agent message beeps', b2 === b + 1, `beeps=${b2}`); b = b2;
 
+  // Repeat alarm: Test sound, then leave the page -> it keeps beeping until focus returns.
+  const setFocus = (on) => page.evaluate((v) => { window.__focused = v; window.dispatchEvent(new Event(v ? 'focus' : 'blur')); }, on);
+  await page.click('button:has-text("Test sound")'); await page.waitForTimeout(300);
+  await setFocus(false); await page.waitForTimeout(7000);
+  b2 = await beeps(); check('test sound + leave page repeats', b2 >= b + 3, `beeps ${b} -> ${b2}`); b = b2;
+  await setFocus(true); await page.waitForTimeout(4000);
+  b2 = await beeps(); check('focus stops the repeat', b2 === b, `beeps=${b2}`); b = b2;
+  // Control: Test sound while staying on the page -> one beep, no repeat.
+  await page.click('button:has-text("Test sound")'); await page.waitForTimeout(7000);
+  b2 = await beeps(); check('test sound without leaving does not repeat (control)', b2 === b + 1, `beeps ${b} -> ${b2}`); b = b2;
+  // Real message while the page is not in focus -> repeats; a click on the panel stops it.
+  await page.evaluate(() => { window.__jqNotify.state.testArmedUntil = 0; window.__focused = false; window.dispatchEvent(new Event('blur')); });
+  await page.evaluate(() => { const d = document.createElement('div'); d.className = 'webchat-message-row bot'; d.textContent = 'Sam has joined the chat.'; document.querySelector('.webchat-chat-history').appendChild(d); });
+  await page.waitForTimeout(7500);
+  b2 = await beeps(); check('message while away repeats', b2 >= b + 3, `beeps ${b} -> ${b2}`); b = b2;
+  await page.click('#jq-notify-panel', { position: { x: 5, y: 5 } }); await page.waitForTimeout(4000);
+  b2 = await beeps(); check('panel click stops the repeat', b2 === b, `beeps=${b2}`); b = b2;
+  await setFocus(true);
+
   // Transcript content.
   const t = await page.evaluate(() => window.__jqNotify.transcript());
   check('transcript has chat text', t.includes("Hi, I'm Jess") && t.includes('My flight JQ123 was cancelled'), 'chat window text');
@@ -80,7 +102,7 @@ const html = `<!doctype html><html><head><title>Complaints | Jetstar</title></he
   check('self test: all pass', rep.includes('Result: all checks passed') && !/^FAIL/m.test(rep), (rep.match(/^(PASS|FAIL).*$/mg) || []).join(' | '));
   check('self test: report sections', ['== Chat discovery ==', '== Activity since start ==', 'same-origin (watched)', 'accepted: "Agent Sam'].every((x) => rep.includes(x)), 'discovery + decisions');
   check('self test probes the real chat element', rep.includes('PASS  Chat element found') && rep.includes('fake messages placed in: real chat element') && rep.includes('div#webchatWindow.webchat'), 'probe target');
-  check('self test keeps counters real', /accepted=2, notChat=1, typing=1, echo=1,/.test(rep), (rep.match(/Counters: .*/) || [''])[0]);
+  check('self test keeps counters real', /accepted=3, notChat=1, typing=1, echo=1,/.test(rep), (rep.match(/Counters: .*/) || [''])[0]);
   const logAfter = await page.evaluate(() => window.__jqNotify.state.log.length);
   check('self test does not add fake messages to log', logAfter === logBefore, `${logBefore} -> ${logAfter}`);
   await page.click('#jq-notify-report >> text=Close');
