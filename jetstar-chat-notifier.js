@@ -1,6 +1,6 @@
 // Jetstar chat notifier — paste into the browser DevTools console on the chat page.
 // Beeps (and flashes the tab title) when a new message arrives in the chat.
-// Panel buttons: Test sound, Copy chat, Pick chat area, Mute, Close.
+// Panel buttons: Test sound, Self test, Copy chat, Pick chat area, Mute, Close.
 (() => {
   'use strict';
 
@@ -14,6 +14,7 @@
   const OWN_ECHO_MS = 15000;
   const BATCH_MS = 600;
   const MIN_BEEP_GAP_MS = 1500;
+  const VERSION = '1.1.0';
 
   const state = {
     root: null,
@@ -34,7 +35,30 @@
     hookedFrames: new WeakSet(),
     log: [],
     cleanups: [],
+    startedAt: new Date(),
+    selfTest: null,
+    // Detector counters and the last decisions, for the self-test report.
+    stats: { mutations: 0, accepted: 0, notChat: 0, typing: 0, echo: 0, short: 0, duplicate: 0 },
+    decisions: [],
   };
+
+  function remember(reason, node, text) {
+    state.stats[reason]++;
+    if (reason === 'notChat' && state.decisions.filter((d) => d.reason === 'notChat').length >= 5) return;
+    state.decisions.push({ at: new Date(), reason, text: (text || '').slice(0, 80), path: pathOf(node) });
+    if (state.decisions.length > 25) state.decisions.shift();
+  }
+
+  function pathOf(node) {
+    const parts = [];
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    for (let i = 0; el && i < 6; i++, el = el.parentElement) {
+      const id = el.id ? '#' + el.id : '';
+      const cls = (attr(el, 'class').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((c) => '.' + c)).join('');
+      parts.unshift(el.tagName.toLowerCase() + id + cls);
+    }
+    return parts.join(' > ');
+  }
 
   // ---------- sound ----------
   function audio() {
@@ -132,10 +156,15 @@
   }
 
   function consider(node) {
-    if (isIgnored(node) || !inChatArea(node)) return;
+    if (isIgnored(node)) return;
     const text = (node.nodeType === 3 ? node.data : node.innerText || node.textContent || '').trim();
-    if (text.length < 2 || TYPING.test(text) || isOwnEcho(text)) return;
-    if (state.pending.some((p) => p.includes(text) || text.includes(p))) return;
+    if (!text) return;
+    if (!inChatArea(node)) return remember('notChat', node, text);
+    if (text.length < 2) return remember('short', node, text);
+    if (TYPING.test(text)) return remember('typing', node, text);
+    if (isOwnEcho(text)) return remember('echo', node, text);
+    if (state.pending.some((p) => p.includes(text) || text.includes(p))) return remember('duplicate', node, text);
+    remember('accepted', node, text);
     state.pending.push(text);
     clearTimeout(state.batchTimer);
     state.batchTimer = setTimeout(flushBatch, BATCH_MS);
@@ -145,10 +174,14 @@
     // Keep only outermost texts: a message row and its inner text node arrive together.
     const texts = state.pending.filter((t, i, all) => !all.some((o, j) => j !== i && o.length > t.length && o.includes(t)));
     state.pending = [];
-    if (texts.length) notify(texts);
+    // Self-test messages carry a marker: count them, never notify.
+    const st = state.selfTest;
+    const real = st ? texts.filter((t) => { if (t.includes(st.marker)) { st.hits.push(t); return false; } return true; }) : texts;
+    if (real.length) notify(real);
   }
 
   function onMutations(mutations) {
+    state.stats.mutations += mutations.length;
     for (const m of mutations) {
       if (m.type === 'characterData') { consider(m.target); continue; }
       m.addedNodes.forEach((node) => {
@@ -261,20 +294,22 @@
     return lines.join('\n');
   }
 
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fallback below */ }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
   async function copyChat() {
     const text = buildTranscript();
-    let ok = false;
-    try { await navigator.clipboard.writeText(text); ok = true; } catch (e) { /* fallback below */ }
-    if (!ok) {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
-      document.body.appendChild(ta);
-      ta.select();
-      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-      ta.remove();
-    }
-    if (ok) {
+    if (await copyText(text)) {
       flash(`Copied ${text.split('\n').length} lines`);
     } else {
       showManualCopy(text);
@@ -296,6 +331,136 @@
     document.body.appendChild(box);
     ta.focus();
     ta.select();
+  }
+
+  // ---------- self test ----------
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Inject a hidden fake message where the detector looks, and report whether it fired.
+  async function probe(kind, text, setup) {
+    const marker = 'JQSELFTEST' + Math.random().toString(36).slice(2, 8);
+    state.selfTest = { marker, hits: [] };
+    const el = document.createElement('div');
+    if (!state.root) el.className = 'webchat-message-row jq-selftest';
+    el.style.cssText = 'position:fixed;left:-9999px;top:0';
+    el.textContent = text.replace('{m}', marker);
+    if (setup) setup(norm(el.textContent));
+    (state.root && state.root.isConnected ? state.root : document.body).appendChild(el);
+    await sleep(BATCH_MS + 500);
+    el.remove();
+    const hits = state.selfTest.hits.length;
+    state.selfTest = null;
+    return hits;
+  }
+
+  function describe(el) {
+    if (!el) return '(none)';
+    const r = el.getBoundingClientRect();
+    return `${pathOf(el)}  [text ${(el.innerText || '').trim().length} chars, ${Math.round(r.width)}x${Math.round(r.height)}px, ` +
+      `${r.width && r.height ? 'visible' : 'hidden'}]`;
+  }
+
+  async function selfTest() {
+    flash('Self test running… (you should hear 3 tones)');
+    const out = [];
+    const line = (ok, name, detail) => out.push(`${ok === null ? 'INFO' : ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
+
+    out.push(`Jetstar chat notifier self test (v${VERSION})`, `Run: ${new Date().toString()}`,
+      `Page: ${location.href}`, `Browser: ${navigator.userAgent}`,
+      `Notifier started: ${state.startedAt.toLocaleTimeString()}`, '', '== Checks ==');
+
+    // Sound
+    let audioState = 'unsupported';
+    try { audio(); beep(); await sleep(150); audioState = state.ctx.state; } catch (e) { audioState = 'error: ' + e.message; }
+    line(audioState === 'running', 'Sound engine', `AudioContext state = ${audioState} (did you hear 3 tones?)`);
+    line(null, 'Mute', state.muted ? 'MUTED — no sound will play' : 'off');
+
+    // Clipboard
+    line(!!(navigator.clipboard && window.isSecureContext), 'Clipboard API', `secure context = ${window.isSecureContext}`);
+
+    // Context
+    line(null, 'Running in', window.top === window ? 'top page' : 'an iframe');
+    line(null, 'Tab', `hidden = ${document.hidden}, focused = ${document.hasFocus()}`);
+
+    // Detector probes
+    const savedSent = [state.lastSent, state.lastSentAt];
+    const msgHits = await probe('message', 'Agent: self test message {m}');
+    line(msgHits > 0, 'Detects a new chat message', `${msgHits} hit(s) in ${state.root ? 'picked area' : 'auto mode'}`);
+    const echoHits = await probe('echo', 'My own text {m}', (t) => { state.lastSent = t; state.lastSentAt = Date.now(); });
+    [state.lastSent, state.lastSentAt] = savedSent;
+    line(echoHits === 0, 'Ignores my own sent message', `${echoHits} hit(s), expected 0`);
+    const typingHits = await probe('typing', '{m} is typing...');
+    line(typingHits === 0, 'Ignores typing indicator', `${typingHits} hit(s), expected 0`);
+
+    // Chat discovery
+    out.push('', '== Chat discovery ==');
+    out.push(`Chat area for copy: ${state.picked ? 'picked' : 'auto'} → ${describe(findChatRoot())}`);
+    const candidates = [];
+    allDocs().forEach((doc) => doc.querySelectorAll('[id], [class]').forEach((el) => {
+      if (panel.contains(el) || el.classList.contains('jq-selftest')) return;
+      if (CHAT_HINT.test(attr(el, 'id') + ' ' + attr(el, 'class'))) candidates.push(el);
+    }));
+    const outer = candidates.filter((el) => !candidates.some((o) => o !== el && o.contains(el)));
+    out.push(`Elements with chat-like id/class: ${candidates.length} (outermost ${outer.length}):`);
+    outer.slice(0, 10).forEach((el) => out.push('  - ' + describe(el)));
+    const frames = [...document.querySelectorAll('iframe')];
+    out.push(`Iframes: ${frames.length}`);
+    frames.slice(0, 15).forEach((f) => {
+      let access = 'cross-origin (NOT watched)';
+      try { if (f.contentDocument) access = 'same-origin (watched)'; } catch (e) { /* cross-origin */ }
+      out.push(`  - ${pathOf(f)} src=${(f.src || '(none)').slice(0, 120)} title=${attr(f, 'title') || '-'} → ${access}`);
+    });
+    const shadows = [...document.querySelectorAll('*')].filter((el) => el.shadowRoot).length;
+    out.push(`Open shadow roots: ${shadows}`);
+    const globals = ['embedded_svc', 'embeddedservice_bootstrap', 'liveagent', 'initWebchat', 'webchat', 'Cognigy']
+      .filter((g) => typeof window[g] !== 'undefined');
+    out.push(`Chat vendor globals found: ${globals.join(', ') || '(none)'}`);
+
+    // Activity
+    out.push('', '== Activity since start ==');
+    out.push('Counters: ' + Object.entries(state.stats).map(([k, v]) => `${k}=${v}`).join(', '));
+    out.push(`Messages notified: ${state.log.length}${state.log.length ? ', last at ' + state.log[state.log.length - 1].at.toLocaleTimeString() : ''}`);
+    out.push('Last detector decisions (newest last):');
+    state.decisions.filter((d) => !d.text.includes('JQSELFTEST')).slice(-15)
+      .forEach((d) => out.push(`  [${d.at.toLocaleTimeString()}] ${d.reason}: "${d.text}"  @ ${d.path}`));
+
+    const fails = out.filter((l) => l.startsWith('FAIL')).length;
+    out.splice(7, 0, `Result: ${fails ? fails + ' check(s) FAILED' : 'all checks passed'}`);
+    const report = out.join('\n');
+    state.lastReport = report;
+    console.log(report);
+    showReport(report, fails);
+    return report;
+  }
+
+  function showReport(report, fails) {
+    const box = document.createElement('div');
+    box.id = 'jq-notify-report';
+    box.style.cssText = 'position:fixed;inset:8% 10%;z-index:2147483647;background:#fff;color:#000;border:2px solid ' +
+      (fails ? '#d00' : '#0a7a2f') + ';border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;font:14px sans-serif';
+    const head = document.createElement('b');
+    head.textContent = fails ? `Self test: ${fails} check(s) failed — copy this and send it to Claude` : 'Self test: all checks passed';
+    const ta = document.createElement('textarea');
+    ta.value = report;
+    ta.readOnly = true;
+    ta.style.cssText = 'flex:1;font:12px monospace';
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;gap:8px';
+    const mk = (label, fn) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = 'background:#ff5115;color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer';
+      b.onclick = fn;
+      bar.appendChild(b);
+      return b;
+    };
+    const copyBtn = mk('📋 Copy report', async () => {
+      copyBtn.textContent = (await copyText(report)) ? 'Copied ✓' : 'Copy failed: select the text';
+    });
+    mk('Close', () => box.remove());
+    box.append(head, ta, bar);
+    box.addEventListener('click', (e) => e.stopPropagation());
+    document.body.appendChild(box);
   }
 
   // ---------- pick chat area ----------
@@ -354,6 +519,7 @@
   }
 
   button('🔔 Test sound', () => { beep(); flash('Test sound played'); });
+  button('🧪 Self test', selfTest);
   button('📋 Copy chat', copyChat);
   button('🎯 Pick chat area', startPick);
   button('🔇 Mute', (b) => { state.muted = !state.muted; b.textContent = state.muted ? '🔊 Unmute' : '🔇 Mute'; renderStatus(); });
@@ -393,12 +559,15 @@
     beep,
     copyChat,
     transcript: buildTranscript,
+    selfTest,
     destroy() {
       state.observers.forEach((o) => o.disconnect());
       state.cleanups.forEach((fn) => fn());
       clearTimeout(state.batchTimer);
       stopFlash();
       panel.remove();
+      const report = document.getElementById('jq-notify-report');
+      if (report) report.remove();
       delete window.__jqNotify;
     },
   };
