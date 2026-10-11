@@ -36,6 +36,10 @@ New text counts as a message when an ancestor id/class looks like a chat widget
 (`chat`, `webchat`, `message`, `liveagent`, ...). It ignores your own sent message
 (the text you typed in the last 15 s), typing indicators, and changes outside the chat.
 
+The Jetstar chat (Cognigy) adds the whole bot history again on every update. So inside the
+chat area, the notifier compares the chat text with the text at the last check, and only the
+new lines count. Lines with "You said:" are your own messages and do not make a sound.
+
 Limit: a chat in a **cross-origin** iframe is not visible to the top page. The self test lists
 such iframes. Then choose the iframe in the Console context drop-down (`top`) and paste again.
 

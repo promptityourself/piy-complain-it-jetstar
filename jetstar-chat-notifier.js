@@ -17,7 +17,7 @@
   const MIN_BEEP_GAP_MS = 1500;
   const REPEAT_MS = 3000; // alarm beep interval while the page is not in focus
   const TEST_ARM_MS = 10000; // after Test sound, leaving the page within this time starts the alarm
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
 
   const state = {
     root: null,
@@ -43,7 +43,8 @@
     startedAt: new Date(),
     selfTest: null,
     // Detector counters and the last decisions, for the self-test report.
-    stats: { mutations: 0, accepted: 0, notChat: 0, typing: 0, echo: 0, short: 0, duplicate: 0 },
+    stats: { mutations: 0, accepted: 0, notChat: 0, typing: 0, echo: 0, short: 0, duplicate: 0, rerender: 0 },
+    snapshots: new WeakMap(), // chat root -> its text lines at the last flush
     decisions: [],
   };
 
@@ -189,17 +190,53 @@
     if (text.length < 2) return remember('short', node, text);
     if (TYPING.test(text)) return remember('typing', node, text);
     if (isOwnEcho(text)) return remember('echo', node, text);
-    if (state.pending.some((p) => p.includes(text) || text.includes(p))) return remember('duplicate', node, text);
+    if (state.pending.some((p) => p.text.includes(text) || text.includes(p.text))) return remember('duplicate', node, text);
     remember('accepted', node, text);
-    state.pending.push(text);
+    state.pending.push({ text, node });
     clearTimeout(state.batchTimer);
     state.batchTimer = setTimeout(flushBatch, BATCH_MS);
   }
 
+  // ---------- re-render filter ----------
+  // Cognigy re-adds the whole bot history on every update. Inside the chat root, only the
+  // lines that are new compared with the last snapshot count as a new message.
+  const OWN_LABEL = /(^|\n)(at [^\n]*,\s*)?you said:/i;
+  const linesOf = (root) => (root.innerText || root.textContent || '').split('\n').map((l) => l.trim()).filter(Boolean);
+
+  function snapshot(root) {
+    if (root) state.snapshots.set(root, linesOf(root));
+  }
+
+  // The lines between the common prefix and the common suffix of the old and new text.
+  function freshLines(prev, cur) {
+    let a = 0;
+    while (a < prev.length && a < cur.length && prev[a] === cur[a]) a++;
+    let b = 0;
+    while (b < prev.length - a && b < cur.length - a && prev[prev.length - 1 - b] === cur[cur.length - 1 - b]) b++;
+    return cur.slice(a, cur.length - b);
+  }
+
   function flushBatch() {
-    // Keep only outermost texts: a message row and its inner text node arrive together.
-    const texts = state.pending.filter((t, i, all) => !all.some((o, j) => j !== i && o.length > t.length && o.includes(t)));
+    const items = state.pending;
     state.pending = [];
+    const root = state.root && state.root.isConnected ? state.root : findChatRoot();
+    const prev = root && state.snapshots.get(root);
+    const inRoot = root ? items.filter((it) => root.contains(it.node)) : [];
+    const outside = items.filter((it) => !inRoot.includes(it));
+    snapshot(root);
+
+    // Keep only outermost texts: a message row and its inner text node arrive together.
+    const outer = (texts) => texts.filter((t, i, all) => !all.some((o, j) => j !== i && o.length > t.length && o.includes(t)));
+    let texts = outer((prev ? outside : items).map((it) => it.text));
+    if (prev && inRoot.length) {
+      const fresh = freshLines(prev, linesOf(root)).filter((l) => l.length >= 2 && !TYPING.test(l));
+      const st = state.selfTest;
+      const real = st ? fresh.filter((l) => { if (l.includes(st.marker)) { st.hits.push(l); return false; } return true; }) : fresh;
+      const block = real.join('\n');
+      if (!block) remember('rerender', root, inRoot[0].text);
+      else if (OWN_LABEL.test(block) || isOwnEcho(block)) remember('echo', root, block);
+      else texts = texts.concat(block);
+    }
     // Self-test messages carry a marker: count them, never notify.
     const st = state.selfTest;
     const real = st ? texts.filter((t) => { if (t.includes(st.marker)) { st.hits.push(t); return false; } return true; }) : texts;
@@ -229,6 +266,7 @@
     observe(doc.documentElement);
     trackSending(doc);
     hookSubtree(doc.documentElement);
+    if (doc === document && !state.root) snapshot(findChatRoot()); // baseline for the re-render filter
   }
 
   // Same-origin iframes and open shadow roots are separate trees: observe them too.
@@ -526,6 +564,7 @@
       e.stopPropagation();
       stop();
       state.root = e.target;
+      snapshot(state.root);
       state.picked = true;
       flash('Chat area set');
       renderStatus();
