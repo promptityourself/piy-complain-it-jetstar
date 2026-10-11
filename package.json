@@ -4,6 +4,6 @@
   "description": "Sound alert, self test and transcript copy for the Jetstar live chat (browser console script)",
   "license": "MIT",
   "private": true,
-  "scripts": { "test": "node test/notifier.test.js" },
+  "scripts": { "test": "node test/notifier.test.js && node test/demo.test.js" },
   "devDependencies": { "playwright": "^1.64.0" }
 }

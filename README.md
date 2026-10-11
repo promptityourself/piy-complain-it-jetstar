@@ -39,11 +39,21 @@ New text counts as a message when an ancestor id/class looks like a chat widget
 Limit: a chat in a **cross-origin** iframe is not visible to the top page. The self test lists
 such iframes. Then choose the iframe in the Console context drop-down (`top`) and paste again.
 
+## Demo: the missed agent
+
+`demo.html` is a fake airline chat ("Demo Air", not Jetstar). It shows what happens when a live agent joins while you look at another window: the agent asks once, then closes the chat.
+
+1. Open `demo.html` in the browser, next to `jetstar-chat-notifier.js`.
+2. Click **▶ Start scenario**, then **Send** in the chat, then switch to another window. The agent joins, waits, and disconnects.
+3. Click **🔔 Load notifier** and **🔔 Test sound**, then run the scenario again. The sound repeats until you come back, and a reply keeps the agent.
+
+The demo timings are invented. Jetstar's real timeouts are not known.
+
 ## Test
 
 ```sh
 npm install
-npm test   # headless browser test with a fake chat page
+npm test   # headless browser tests: fake chat page + the missed-agent demo
 ```
 
 The test uses your installed Google Chrome. Set `PW_CHANNEL=` to use Playwright's own Chromium.
